@@ -4,7 +4,7 @@ A simple PHP-based web application.
 
 ## How to Run
 
-⚠️ This project does NOT run directly on GitHub.
+This project does NOT run directly on GitHub.
 
 ### Steps:
 1. Install XAMPP
