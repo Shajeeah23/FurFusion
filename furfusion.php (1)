@@ -1,0 +1,680 @@
+<?php
+session_start();
+
+/* ---------- DATABASE CONNECTION ---------- */
+$conn = mysqli_connect("localhost","root","","furfusion");
+if(!$conn){ die("DB Connection Failed: ".mysqli_connect_error()); }
+
+/* ---------- TABLES ---------- */
+mysqli_query($conn,"CREATE TABLE IF NOT EXISTS users (
+id INT AUTO_INCREMENT PRIMARY KEY,
+username VARCHAR(50) UNIQUE,
+password VARCHAR(255),
+role VARCHAR(20)
+)");
+$checkAdmin = mysqli_query($conn,"SELECT * FROM users WHERE role='admin'");
+if(mysqli_num_rows($checkAdmin)==0){
+    $pass=password_hash("admin123",PASSWORD_DEFAULT);
+    mysqli_query($conn,"INSERT INTO users (username,password,role) VALUES ('admin','$pass','admin')");
+}
+
+mysqli_query($conn,"CREATE TABLE IF NOT EXISTS pets (
+pet_id INT AUTO_INCREMENT PRIMARY KEY,
+name VARCHAR(100),
+type VARCHAR(50),
+breed VARCHAR(100),
+age INT,
+gender VARCHAR(10),
+size VARCHAR(10),
+temperament VARCHAR(50),
+health_status VARCHAR(50),
+vaccinated VARCHAR(10),
+adoption_status VARCHAR(20) DEFAULT 'Available'
+)");
+mysqli_query($conn,"INSERT IGNORE INTO pets (pet_id,name,type,breed,age,gender,size,temperament,health_status,vaccinated)
+VALUES
+(1,'Whiskers','Cat','Siamese',2,'Male','Small','Friendly','Healthy','Yes'),
+(2,'Luna','Cat','Bengal',3,'Female','Medium','Active','Healthy','Yes')");
+
+mysqli_query($conn,"CREATE TABLE IF NOT EXISTS adopters (
+adopter_id INT AUTO_INCREMENT PRIMARY KEY,
+name VARCHAR(100),
+email VARCHAR(100),
+gender VARCHAR(10),
+address TEXT
+)");
+
+mysqli_query($conn,"CREATE TABLE IF NOT EXISTS adoptions (
+adoption_id INT AUTO_INCREMENT PRIMARY KEY,
+pet_id INT,
+adopter_id INT,
+adoption_date DATE,
+status VARCHAR(20) DEFAULT 'Requested'
+)");
+
+mysqli_query($conn,"CREATE TABLE IF NOT EXISTS health_records (
+record_id INT AUTO_INCREMENT PRIMARY KEY,
+pet_id INT,
+vaccination_date DATE,
+treatment VARCHAR(100),
+next_checkup DATE
+)");
+
+mysqli_query($conn,"CREATE TABLE IF NOT EXISTS breeding (
+breeding_id INT AUTO_INCREMENT PRIMARY KEY,
+pet_male INT,
+pet_female INT,
+status VARCHAR(20),
+due_date DATE,
+litter_prediction INT
+)");
+
+/* ---------- AUTH ---------- */
+$error = $success = "";
+if(isset($_POST['login'])){
+    $u=$_POST['username']; $p=$_POST['password']; $r=$_POST['role'];
+    $res=mysqli_query($conn,"SELECT * FROM users WHERE username='$u' AND role='$r'");
+    if($row=mysqli_fetch_assoc($res)){
+        if(password_verify($p,$row['password'])){
+            $_SESSION['user']=$u;
+            $_SESSION['role']=$r;
+            $_SESSION['userid']=$row['id'];
+            header("Location: furfusion.php");
+            exit;
+        }
+    }
+    $error="Invalid login credentials";
+}
+
+if(isset($_POST['register'])){
+    $u=$_POST['username']; $p=password_hash($_POST['password'],PASSWORD_DEFAULT);
+    $chk=mysqli_query($conn,"SELECT * FROM users WHERE username='$u'");
+    if(mysqli_num_rows($chk)>0) $error="Username exists!";
+    else{
+        mysqli_query($conn,"INSERT INTO users (username,password,role) VALUES ('$u','$p','adopter')");
+        $last_id = mysqli_insert_id($conn);
+        mysqli_query($conn,"INSERT INTO adopters (adopter_id,name) VALUES ($last_id,'$u')");
+        $success="Registration successful! Login to continue.";
+    }
+}
+
+if(isset($_GET['logout'])){
+    session_destroy(); header("Location: furfusion.php?page=login"); exit;
+}
+
+/* ---------- PAGE CONTROL ---------- */
+$page=$_GET['page']??'home';
+$public_pages=['login','register'];
+if(!isset($_SESSION['user']) && !in_array($page,$public_pages)){
+    header("Location: furfusion.php?page=login"); exit;
+}
+
+/* ---------- FORM SUBMISSIONS ---------- */
+$msg="";
+
+/* Add Pet */
+if(isset($_POST['add_pet'])){
+    $name = $_POST['name']; $breed = $_POST['breed'];
+    $chk = mysqli_query($conn,"SELECT * FROM pets WHERE name='$name' AND breed='$breed'");
+    if(mysqli_num_rows($chk) > 0){
+        $msg = "❌ This pet already exists!";
+    } else {
+        $sql="INSERT INTO pets (name,type,breed,age,gender,size,temperament,health_status,vaccinated)
+        VALUES ('".$_POST['name']."','".$_POST['type']."','".$_POST['breed']."',".$_POST['age'].",'".$_POST['gender']."','".$_POST['size']."','".$_POST['temperament']."','".$_POST['health']."','".$_POST['vaccinated']."')";
+        mysqli_query($conn,$sql);
+        $msg="✅ Pet added successfully!";
+        header("Location:?page=add_pet");
+        exit;
+    }
+}
+
+/* Add Adopter */
+if(isset($_POST['add_adopter'])){
+    mysqli_query($conn,"INSERT INTO adopters (name) VALUES ('".$_POST['name']."')");
+    $msg="Adopter added successfully!";
+}
+
+/* Add Health Record */
+if(isset($_POST['add_health'])){
+    mysqli_query($conn,"INSERT INTO health_records (pet_id,vaccination_date,treatment,next_checkup)
+    VALUES (".$_POST['pet'].",'".$_POST['vac']."','".$_POST['treat']."','".$_POST['next']."')");
+    $msg="Health record added!";
+}
+
+/* Plan Breeding */
+if(isset($_POST['plan_breeding'])){
+    $male = $_POST['male']; $female = $_POST['female']; $due = $_POST['due']; $litter = $_POST['litter'];
+    if($male==$female){ $msg="❌ Male and Female cannot be the same pet!"; }
+    else{
+        $chk=mysqli_query($conn,"SELECT * FROM breeding WHERE pet_male=$male AND pet_female=$female AND due_date='$due'");
+        if(mysqli_num_rows($chk)>0){ $msg="⚠ This breeding pair is already planned for this date!"; }
+        else{
+            mysqli_query($conn,"INSERT INTO breeding (pet_male, pet_female, status, due_date, litter_prediction) VALUES ($male,$female,'Planned','$due',$litter)");
+            $msg="✅ Breeding planned successfully!";
+        }
+    }
+}
+
+/* Adopter requests adoption */
+if(isset($_POST['req_adopt'])){
+    $pet = $_POST['pet']; $uid = $_SESSION['userid'];
+    $chk = mysqli_query($conn,"SELECT * FROM adoptions WHERE pet_id=$pet AND adopter_id=$uid");
+    if(mysqli_num_rows($chk)==0){
+        mysqli_query($conn,"INSERT INTO adoptions (pet_id,adopter_id,adoption_date,status) VALUES ($pet,$uid,CURDATE(),'Requested')");
+    }
+}
+
+/* Admin approves adoption */
+if(isset($_POST['approve_adoption'])){
+    $adopt_id = $_POST['adopt_id']; $pet_id = $_POST['pet_id'];
+    mysqli_query($conn,"UPDATE adoptions SET status='Approved' WHERE adoption_id=$adopt_id");
+    mysqli_query($conn,"UPDATE pets SET adoption_status='Adopted' WHERE pet_id=$pet_id");
+    header("Location:?page=approve"); exit;
+}
+
+/* ---------- HTML & STYLES ---------- */
+?>
+<!DOCTYPE html>
+<html>
+<head>
+<title>FurFusion Dashboard</title>
+<style>
+header { background:#111; padding:15px; color:#4CAF50; display:flex; justify-content:center; align-items:center; position:relative;}
+header h2.logo {margin:0; font-size:28px;}
+header a.logout-btn {position:absolute; right:20px; color:#4CAF50; text-decoration:none; font-size:16px;}
+header a.logout-btn:hover{color:#66ff66;}
+body{font-family:Arial;background:#1e1e1e;color:#ddd;margin:0;}
+nav{background:#222;padding:10px;}
+nav a{color:#ddd;padding:10px 15px;display:inline-block;text-decoration:none;}
+nav a:hover{background:#444;color:#4CAF50;}
+main{padding:20px;}
+table{width:100%;border-collapse:collapse;margin-top:10px;}
+th,td{border:1px solid #555;padding:8px;text-align:left;}
+button{padding:5px 10px;margin:3px;background:#4CAF50;color:#fff;border:none;cursor:pointer;}
+button:hover{background:#45a049;}
+input,select,textarea{padding:5px;margin:5px 0;background:#333;color:#fff;border:1px solid #555;}
+.error{color:#ff6666;}
+.message{color:#66ff66;}
+.centered{display:flex;justify-content:center;align-items:center;height:70vh;flex-direction:column;}
+form{background:#222;padding:20px;border-radius:5px;}
+</style>
+</head>
+<body>
+<header>
+<h2 class="logo">FurFusion</h2>
+<?php if(isset($_SESSION['user'])) echo "<a href='?logout=1' class='logout-btn'>Logout</a>"; ?>
+</header>
+
+<?php
+/* ---------- LOGIN ---------- */
+if($page=="login"){ ?>
+<div class="centered">
+<div class="error"><?= $error ?></div>
+<div class="message"><?= $success ?></div>
+<form method="POST">
+<input name="username" placeholder="Username" required><br>
+<input type="password" name="password" placeholder="Password" required><br>
+<select name="role">
+<option value="admin">Admin</option>
+<option value="adopter">Adopter</option>
+</select><br>
+<button name="login">Login</button>
+</form>
+<p><a href="?page=register" style="color:#4CAF50">Register here</a></p>
+</div>
+<?php exit; }
+
+/* ---------- REGISTER ---------- */
+if($page=="register"){ ?>
+<div class="centered">
+<div class="error"><?= $error ?></div>
+<div class="message"><?= $success ?></div>
+<form method="POST">
+<input name="username" placeholder="Username" required><br>
+<input type="password" name="password" placeholder="Password" required><br>
+<button name="register">Register</button>
+</form>
+<p><a href="?page=login" style="color:#4CAF50">Login here</a></p>
+</div>
+<?php exit; }
+?>
+
+<nav>
+<a href="?page=home">Home</a>
+<a href="?page=search">Pets</a>
+<?php if($_SESSION['role']=='adopter'){ ?>
+<a href="?page=genetic">Genetic Feasibility</a>
+<a href="?page=profile">Profile</a>
+<?php } ?>
+<?php if($_SESSION['role']=='admin'){ ?>
+<a href="?page=add_pet">Add Pet</a>
+<a href="?page=add_adopter">Add Adopter</a>
+<a href="?page=health">Health Records</a>
+<a href="?page=breeding">Breeding</a>
+<a href="?page=approve">Approve Adoption</a>
+<a href="?page=adopters_info">Adopters Info</a>
+<?php } ?>
+</nav>
+
+<main>
+<?php
+/* ---------- PAGE SWITCH ---------- */
+switch($page){
+
+/* ---------- HOME ---------- */
+case "home":
+    echo "<h2 style='text-align:center;font-size:32px;font-weight:bold;margin-top:20px;'>
+            Welcome ".$_SESSION['user']." 
+          </h2>";
+
+    // Centered search bar
+    echo "
+    <div style='display:flex;justify-content:center;margin:30px 0;'>
+        <form method='POST' style='display:flex;gap:5px;'>
+            <input type='text' name='search_term' placeholder='Enter pet name or breed'>
+            <button name='search_pet_home'>Search</button>
+        </form>
+    </div>
+    ";
+
+    // Show results only if search submitted
+    if(isset($_POST['search_pet_home']) && !empty($_POST['search_term'])){
+        $term = $_POST['search_term'];
+        $q=mysqli_query($conn,"SELECT * FROM pets WHERE name LIKE '%$term%' OR breed LIKE '%$term%'");
+        if(mysqli_num_rows($q)>0){
+            echo "<table><tr><th>Name</th><th>Breed</th><th>Status</th>";
+            if($_SESSION['role']=='adopter') echo "<th>Action</th>";
+            echo "</tr>";
+            while($p=mysqli_fetch_assoc($q)){
+                echo "<tr>
+                <td>{$p['name']}</td>
+                <td>{$p['breed']}</td>
+                <td>{$p['adoption_status']}</td>";
+                if($_SESSION['role']=='adopter'){
+                    if($p['adoption_status']=='Available'){
+                        echo "<td>
+                        <form method='POST' style='margin:0'>
+                        <input type='hidden' name='pet' value='{$p['pet_id']}'>
+                        <button name='req_adopt'>Request</button>
+                        </form></td>";
+                    } else echo "<td>Not Available</td>";
+                }
+                echo "</tr>";
+            }
+            echo "</table>";
+        } else echo "<p style='text-align:center;'>No pets found.</p>";
+    }
+    if($msg!="") echo "<p class='message' style='text-align:center;'>$msg</p>";
+break;
+
+
+/* ---------- SEARCH ---------- */
+case "search":
+    echo "<h3>Search Pets</h3>
+    <form method='POST' style='margin-bottom:10px'>
+    <input type='text' name='search_term' placeholder='Enter pet name or breed'>
+    <button name='search_pet'>Search</button>
+    </form>";
+
+    $search_sql = "SELECT * FROM pets";
+    if(isset($_POST['search_pet']) && !empty($_POST['search_term'])){
+        $term=$_POST['search_term'];
+        $search_sql.=" WHERE name LIKE '%$term%' OR breed LIKE '%$term%'";
+    }
+    $q=mysqli_query($conn,$search_sql);
+    echo "<table><tr><th>Name</th><th>Breed</th><th>Status</th>";
+    if($_SESSION['role']=='adopter') echo "<th>Action</th>";
+    echo "</tr>";
+    while($p=mysqli_fetch_assoc($q)){
+        echo "<tr><td>{$p['name']}</td><td>{$p['breed']}</td><td>{$p['adoption_status']}</td>";
+        if($_SESSION['role']=='adopter'){
+            if($p['adoption_status']=='Available'){
+                echo "<td><form method='POST' style='margin:0'>
+                <input type='hidden' name='pet' value='{$p['pet_id']}'>
+                <button name='req_adopt'>Request</button></form></td>";
+            } else echo "<td>Not Available</td>";
+        }
+        echo "</tr>";
+    }
+    echo "</table>";
+break;
+
+/* ---------- GENETIC ---------- */
+case "genetic":
+echo "<h3>Genetic Feasibility</h3>
+<form method='POST'>
+<select name='breed1' required>
+<option value=''>Select Breed 1</option>";
+$q=mysqli_query($conn,"SELECT DISTINCT breed FROM pets");
+while($b=mysqli_fetch_assoc($q)) echo "<option>{$b['breed']}</option>";
+echo "</select>
+
+<select name='breed2' required>
+<option value=''>Select Breed 2</option>";
+$q=mysqli_query($conn,"SELECT DISTINCT breed FROM pets");
+while($b=mysqli_fetch_assoc($q)) echo "<option>{$b['breed']}</option>";
+echo "</select><br><br>
+
+<select name='percent' required>
+<option>50-50</option>
+<option>40-60</option>
+<option>60-40</option>
+<option>30-70</option>
+<option>70-30</option>
+<option>20-80</option>
+<option>80-20</option>
+<option>10-90</option>
+<option>90-10</option>
+</select><br><br>
+
+<button name='check_genetic'>Check Feasibility</button>
+</form>";
+
+if(isset($_POST['check_genetic'])){
+    $b1 = $_POST['breed1'];
+    $b2 = $_POST['breed2'];
+    $percent = $_POST['percent'];
+    
+    echo "<p>Selected combination: <b>$b1</b> and <b>$b2</b> — <b>$percent</b></p>";
+    
+    $p1 = intval(explode('-', $percent)[0]); // first breed %
+    
+    if($p1 >= 40 && $p1 <= 60) echo "<p>✔ Genetically feasible</p>";
+    elseif($p1 >= 30 && $p1 <= 70) echo "<p>⚠ Rare but possible</p>";
+    else echo "<p>❌ Not genetically feasible</p>";
+}
+break;
+
+/* ---------- ADD PET ---------- */
+case "add_pet":
+if($_SESSION['role']=='admin'){
+?>
+<h3>Add Pet</h3>
+<form method="POST">
+<input name="name" placeholder="Name"><br>
+<input name="type" placeholder="Type"><br>
+<input name="breed" placeholder="Breed"><br>
+<input type="number" name="age" placeholder="Age"><br>
+<select name="gender"><option>Male</option><option>Female</option></select><br>
+<select name="size"><option>Small</option><option>Medium</option><option>Large</option></select><br>
+<input name="temperament" placeholder="Temperament"><br>
+<input name="health" placeholder="Health Status"><br>
+<select name="vaccinated"><option>Yes</option><option>No</option></select><br>
+<button name="add_pet">Add Pet</button>
+</form>
+<?php 
+} break;
+
+/* ---------- ADD ADOPTER ---------- */
+case "add_adopter":
+if($_SESSION['role']=='admin'){
+?>
+<h3>Add Adopter</h3>
+<form method="POST">
+<input name="name" placeholder="Adopter Name"><br>
+<button name="add_adopter">Add</button>
+</form>
+<?php } break;
+
+/* ---------- HEALTH RECORDS ---------- */
+case "health":
+if($_SESSION['role']=='admin'){
+    echo "<h3>Health Records</h3>
+    <form method='POST'>
+    <select name='pet'>";
+    $q=mysqli_query($conn,"SELECT * FROM pets");
+    while($p=mysqli_fetch_assoc($q)){
+        echo "<option value='{$p['pet_id']}'>{$p['name']}</option>";
+    }
+    echo "</select><br>
+    Vaccination Date:<input type='date' name='vac'><br>
+    Treatment:<input name='treat'><br>
+    Next Checkup:<input type='date' name='next'><br>
+    <button name='add_health'>Add Health Record</button>
+    </form>";
+
+    echo "<h4>All Records</h4>";
+    $q=mysqli_query($conn,"SELECT hr.*,p.name as pet_name FROM health_records hr JOIN pets p ON hr.pet_id=p.pet_id");
+    echo "<table><tr><th>Pet Name</th><th>Vaccination</th><th>Treatment</th><th>Next Checkup</th></tr>";
+    while($r=mysqli_fetch_assoc($q)){
+        echo "<tr><td>{$r['pet_name']}</td><td>{$r['vaccination_date']}</td><td>{$r['treatment']}</td><td>{$r['next_checkup']}</td></tr>";
+    }
+    echo "</table>";
+}
+break;
+
+/* ---------- BREEDING ---------- */
+case "breeding":
+if($_SESSION['role']=='admin'){
+
+    echo "<h3>Plan Breeding</h3>";
+
+    // Show any message
+    if($msg!="") echo "<p class='message'>$msg</p>";
+
+    // Handle new breeding submission
+    if(isset($_POST['plan_breeding'])){
+        $male = $_POST['male'];
+        $female = $_POST['female'];
+        $due = $_POST['due'];
+        $litter = $_POST['litter'];
+
+        if($male == $female){
+            $msg = "❌ Male and Female cannot be the same pet!";
+        } else {
+            // Check for duplicates
+            $chk = mysqli_query($conn,"SELECT * FROM breeding WHERE pet_male=$male AND pet_female=$female AND due_date='$due'");
+            if(mysqli_num_rows($chk) > 0){
+                $msg = "⚠ This breeding pair is already planned for this date!";
+            } else {
+                mysqli_query($conn,"INSERT INTO breeding (pet_male, pet_female, status, due_date, litter_prediction) 
+                                   VALUES ($male, $female, 'Planned', '$due', $litter)");
+                $msg = "✅ Breeding planned successfully!";
+            }
+        }
+    }
+
+    // Fetch available male pets
+    $q_male = mysqli_query($conn,"SELECT * FROM pets WHERE gender='Male' AND adoption_status='Available'");
+    echo "<form method='POST'>
+    <select name='male' required>
+        <option value=''>Select Male Pet</option>";
+    while($p=mysqli_fetch_assoc($q_male)){
+        echo "<option value='{$p['pet_id']}'>{$p['name']} (Age: {$p['age']}, Health: {$p['health_status']})</option>";
+    }
+    echo "</select> Male<br>";
+
+    // Fetch available female pets
+    $q_female = mysqli_query($conn,"SELECT * FROM pets WHERE gender='Female' AND adoption_status='Available'");
+    echo "<select name='female' required>
+        <option value=''>Select Female Pet</option>";
+    while($p=mysqli_fetch_assoc($q_female)){
+        echo "<option value='{$p['pet_id']}'>{$p['name']} (Age: {$p['age']}, Health: {$p['health_status']})</option>";
+    }
+    echo "</select> Female<br>";
+
+    echo "Due Date:<input type='date' name='due' required><br>
+    Litter Prediction:<input type='number' name='litter' min='1' required><br>
+    <button name='plan_breeding'>Plan Breeding</button>
+    </form>";
+
+    // Fetch all planned breedings (outside of any insert if)
+    $q_plan = mysqli_query($conn,"
+        SELECT b.*, pm.name AS male_name, pf.name AS female_name 
+        FROM breeding b
+        JOIN pets pm ON b.pet_male = pm.pet_id
+        JOIN pets pf ON b.pet_female = pf.pet_id
+        ORDER BY b.due_date ASC
+    ");
+
+    echo "<h4>Current Planned Breedings</h4>";
+    echo "<table>
+    <tr><th>Male</th><th>Female</th><th>Status</th><th>Due Date</th><th>Litter Prediction</th><th>Action</th></tr>";
+
+    while($r=mysqli_fetch_assoc($q_plan)){
+        echo "<tr>
+            <td>{$r['male_name']}</td>
+            <td>{$r['female_name']}</td>
+            <td>{$r['status']}</td>
+            <td>{$r['due_date']}</td>
+            <td>{$r['litter_prediction']}</td>
+            <td>";
+        if($r['status']=='Planned'){
+            echo "<form method='POST' style='margin:0'>
+                    <input type='hidden' name='breeding_id' value='{$r['breeding_id']}'>
+                    <button name='complete_breeding'>Mark Completed</button>
+                  </form>";
+        } else {
+            echo "—";
+        }
+        echo "</td>
+        </tr>";
+    }
+    echo "</table>";
+
+    // Handle marking as completed
+    if(isset($_POST['complete_breeding'])){
+        $id = $_POST['breeding_id'];
+        mysqli_query($conn,"UPDATE breeding SET status='Completed' WHERE breeding_id=$id");
+        $msg = "✅ Breeding marked as completed!";
+    }
+
+}
+break;
+
+
+/* ---------- APPROVE ADOPTION ---------- */
+case "approve":
+if($_SESSION['role']=='admin'){
+    echo "<h3>Adoption Requests</h3>";
+
+    $q = mysqli_query($conn,"
+        SELECT a.adoption_id, a.pet_id, a.adoption_date,
+               p.name AS pet_name, p.adoption_status,
+               d.name AS adopter_name
+        FROM adoptions a
+        JOIN pets p ON a.pet_id = p.pet_id
+        JOIN adopters d ON a.adopter_id = d.adopter_id
+        WHERE a.status='Requested' AND p.adoption_status='Available'
+        ORDER BY a.adoption_date ASC
+    ");
+
+    echo "<table>
+    <tr>
+        <th>Adopter</th>
+        <th>Pet</th>
+        <th>Action</th>
+    </tr>";
+
+    while($r = mysqli_fetch_assoc($q)){
+        echo "<tr>
+        <td>{$r['adopter_name']}</td>
+        <td>{$r['pet_name']}</td>
+        <td>
+            <form method='POST' style='margin:0'>
+                <input type='hidden' name='adopt_id' value='{$r['adoption_id']}'>
+                <input type='hidden' name='pet_id' value='{$r['pet_id']}'>
+                <button name='approve_adoption'>Approve</button>
+            </form>
+        </td>
+        </tr>";
+    }
+
+    echo "</table>";
+
+    // Handle approval
+    if(isset($_POST['approve_adoption'])){
+        $adopt_id = $_POST['adopt_id'];
+        $pet_id = $_POST['pet_id'];
+
+        // Update adoption request status and pet status
+        mysqli_query($conn,"UPDATE adoptions SET status='Approved' WHERE adoption_id=$adopt_id");
+        mysqli_query($conn,"UPDATE pets SET adoption_status='Adopted' WHERE pet_id=$pet_id");
+
+        // Refresh page to remove adopted pet from list
+        header("Location:?page=approve");
+        exit;
+    }
+}
+break;
+
+
+/* ---------- ADOPTERS INFO ---------- */
+case "adopters_info":
+if($_SESSION['role']=='admin'){
+    echo "<h3>All Adopters</h3>
+    <form method='POST' style='margin-bottom:10px'>
+    <input type='text' name='search_term' placeholder='Search by name, email, or ID'>
+    <button name='search_adopter'>Search</button>
+    </form>";
+
+    $search_sql = "SELECT * FROM adopters";
+    if(isset($_POST['search_adopter']) && !empty($_POST['search_term'])){
+        $term = $_POST['search_term'];
+        $search_sql .= " WHERE name LIKE '%$term%' OR email LIKE '%$term%' OR adopter_id LIKE '%$term%'";
+    }
+
+    $q=mysqli_query($conn,$search_sql);
+
+    echo "<table><tr><th>ID</th><th>Name</th><th>Email</th><th>Gender</th><th>Address</th></tr>";
+    while($a=mysqli_fetch_assoc($q)){
+        $email = $a['email'] ?? '';
+        $gender = $a['gender'] ?? '';
+        $address = $a['address'] ?? '';
+        echo "<tr>
+        <td>{$a['adopter_id']}</td>
+        <td>{$a['name']}</td>
+        <td>{$email}</td>
+        <td>{$gender}</td>
+        <td>{$address}</td>
+        </tr>";
+    }
+    echo "</table>";
+}
+break;
+
+/* ---------- PROFILE ---------- */
+case "profile":
+if($_SESSION['role']=='adopter'){
+    $q = mysqli_query($conn,"SELECT * FROM adopters WHERE adopter_id=".$_SESSION['userid']);
+    $a = mysqli_fetch_assoc($q);
+
+    echo "<h3>Your Profile</h3>";
+
+    // Handle form submission
+    if(isset($_POST['update_profile'])){
+        $name = $_POST['name'];
+        $email = $_POST['email'];
+        $gender = $_POST['gender'];
+        $address = $_POST['address'];
+
+        mysqli_query($conn,"UPDATE adopters 
+                            SET name='$name', email='$email', gender='$gender', address='$address' 
+                            WHERE adopter_id=".$_SESSION['userid']);
+        mysqli_query($conn,"UPDATE users SET username='$name' WHERE id=".$_SESSION['userid']);
+        $msg = "✅ Profile updated successfully!";
+        // Refresh data
+        $a['name']=$name; $a['email']=$email; $a['gender']=$gender; $a['address']=$address;
+    }
+
+    if($msg!="") echo "<p class='message'>$msg</p>";
+
+    echo "<form method='POST'>
+        Name:<br><input name='name' value='{$a['name']}' required><br>
+        Email:<br><input name='email' type='email' value='{$a['email']}'><br>
+        Gender:<br>
+        <select name='gender'>
+            <option ".($a['gender']=='Male'?'selected':'').">Male</option>
+            <option ".($a['gender']=='Female'?'selected':'').">Female</option>
+        </select><br>
+        Address:<br><textarea name='address'>{$a['address']}</textarea><br>
+        <button name='update_profile'>Update Profile</button>
+    </form>";
+}
+break;
+
+}
+?>
+</main>
+</body>
+</html>
